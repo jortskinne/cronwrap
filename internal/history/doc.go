@@ -1,17 +1,12 @@
-// Package history provides persistent run history tracking for cronwrap.
+// Package history provides persistent run-history storage and reporting for
+// cronwrap.
 //
-// Records are stored as newline-delimited JSON in a configurable file path.
-// Each record captures the job label, exit status, output, and timing
-// information for later review or reporting.
+// Records are appended to a newline-delimited JSON file on disk.  The package
+// exposes helpers to:
 //
-// Example usage:
-//
-//	store, err := history.NewStore("/var/log/cronwrap/history.jsonl")
-//	if err != nil {
-//		log.Fatal(err)
-//	}
-//	if err := store.Append(record); err != nil {
-//		log.Println("failed to save history:", err)
-//	}
-//	records, err := store.ReadAll()
+//   - Append a new Record after each job execution (Store.Append).
+//   - Read all stored records back (Store.ReadAll).
+//   - Prune the file to a maximum number of entries (Prune).
+//   - Compute aggregate statistics over a slice of records (Summarize).
+//   - Render a human-readable tabular report to any io.Writer (PrintReport).
 package history
