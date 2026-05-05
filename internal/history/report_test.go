@@ -72,3 +72,16 @@ func TestPrintReport_NoLimit(t *testing.T) {
 		t.Errorf("expected 5 rows, got %d", count)
 	}
 }
+
+func TestPrintReport_TotalRunsCount(t *testing.T) {
+	records := makeRecords(7)
+	var buf bytes.Buffer
+	if err := PrintReport(&buf, records, 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The summary should always reflect the total number of records,
+	// regardless of any display limit.
+	if !strings.Contains(buf.String(), "Total runs : 7") {
+		t.Errorf("expected 'Total runs : 7' in output, got:\n%s", buf.String())
+	}
+}
