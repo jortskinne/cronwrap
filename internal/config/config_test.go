@@ -12,7 +12,9 @@ func writeTemp(t *testing.T, content string) string {
 	if err != nil {
 		t.Fatalf("create temp file: %v", err)
 	}
-	f.WriteString(content)
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
 	f.Close()
 	return f.Name()
 }
@@ -24,10 +26,10 @@ func TestLoad_Valid(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.Command != "echo" {
-		t.Errorf("expected command echo, got %s", cfg.Command)
+		t.Errorf("command = %q, want echo", cfg.Command)
 	}
 	if cfg.JobName != "test-job" {
-		t.Errorf("expected job_name test-job, got %s", cfg.JobName)
+		t.Errorf("job_name = %q, want test-job", cfg.JobName)
 	}
 }
 
@@ -47,39 +49,40 @@ func TestLoad_FileNotFound(t *testing.T) {
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
-	path := writeTemp(t, "command: echo\n")
-	t.Setenv("CRONWRAP_SLACK_WEBHOOK", "https://hooks.slack.com/test")
-	t.Setenv("CRONWRAP_PAGERDUTY_KEY", "pd-integration-key")
+	path := writeTemp(t, "command: ls\nopsgenie:\n  api_key: original\n")
+	t.Setenv("CRONWRAP_OPSGENIE_API_KEY", "env-key")
+	t.Setenv("CRONWRAP_OPSGENIE_TEAM", "env-team")
+
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Slack.WebhookURL != "https://hooks.slack.com/test" {
-		t.Errorf("slack webhook not overridden, got %s", cfg.Slack.WebhookURL)
+	if cfg.OpsGenie.APIKey != "env-key" {
+		t.Errorf("api_key = %q, want env-key", cfg.OpsGenie.APIKey)
 	}
-	if cfg.PagerDuty.IntegrationKey != "pd-integration-key" {
-		t.Errorf("pagerduty key not overridden, got %s", cfg.PagerDuty.IntegrationKey)
+	if cfg.OpsGenie.Team != "env-team" {
+		t.Errorf("team = %q, want env-team", cfg.OpsGenie.Team)
 	}
 }
 
-func TestLoad_PagerDutyConfig(t *testing.T) {
-	path := writeTemp(t, "command: echo\npagerduty:\n  integration_key: my-key\n")
+func TestLoad_OpsGenieFields(t *testing.T) {
+	path := writeTemp(t, "command: backup\nopsgenie:\n  api_key: abc123\n  team: sre\n")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.PagerDuty.IntegrationKey != "my-key" {
-		t.Errorf("expected integration key my-key, got %s", cfg.PagerDuty.IntegrationKey)
+	if cfg.OpsGenie.APIKey != "abc123" {
+		t.Errorf("api_key = %q, want abc123", cfg.OpsGenie.APIKey)
+	}
+	if cfg.OpsGenie.Team != "sre" {
+		t.Errorf("team = %q, want sre", cfg.OpsGenie.Team)
 	}
 }
 
-func TestLoad_NotifyOnSuccess(t *testing.T) {
-	path := writeTemp(t, "command: echo\nnotify_on_success: true\n")
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !cfg.NotifyOnSuccess {
-		t.Error("expected notify_on_success to be true")
+func TestLoad_InvalidYAML(t *testing.T) {
+	path := writeTemp(t, ": bad: yaml: [unclosed")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
 	}
 }

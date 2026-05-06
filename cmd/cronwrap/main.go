@@ -43,39 +43,28 @@ func main() {
 			log.Fatalf("cronwrap: create csv: %v", err)
 		}
 		defer f.Close()
-		if err := history.ExportCSV(store, f); err != nil {
+		records, _ := store.ReadAll()
+		if err := history.ExportCSV(records, f); err != nil {
 			log.Fatalf("cronwrap: export csv: %v", err)
 		}
-		fmt.Fprintf(os.Stderr, "exported history to %s\n", *exportCSV)
+		fmt.Fprintf(os.Stdout, "exported %d records to %s\n", len(records), *exportCSV)
 		return
 	}
 
-	result, err := runner.Run(runner.Options{
-		Command: cfg.Command,
-		Args:    cfg.Args,
-		Timeout: time.Duration(cfg.Timeout) * time.Second,
-	})
+	result, err := runner.Run(cfg)
 	if err != nil {
 		log.Fatalf("cronwrap: run: %v", err)
 	}
 
-	jobResult := notifier.JobResult{
+	rec := history.Record{
 		JobName:   cfg.JobName,
-		Success:   result.ExitCode == 0,
+		StartedAt: time.Now().Add(-result.Duration),
+		Duration:  result.Duration,
+		Success:   result.Success,
 		ExitCode:  result.ExitCode,
 		Output:    result.Output,
-		Duration:  result.Duration,
-		StartedAt: result.StartedAt,
 	}
-
-	if err := store.Append(history.Record{
-		JobName:   cfg.JobName,
-		StartedAt: result.StartedAt,
-		Duration:  result.Duration,
-		ExitCode:  result.ExitCode,
-		Success:   jobResult.Success,
-		Output:    result.Output,
-	}); err != nil {
+	if err := store.Append(rec); err != nil {
 		log.Printf("cronwrap: save history: %v", err)
 	}
 
@@ -87,34 +76,34 @@ func main() {
 		log.Printf("cronwrap: apply retention: %v", err)
 	}
 
-	if !jobResult.Success || cfg.NotifyOnSuccess {
+	if !result.Success || cfg.NotifyOnSuccess {
 		var notifiers []notifier.Notifier
 		if cfg.Slack.WebhookURL != "" {
 			notifiers = append(notifiers, notifier.NewSlackNotifier(cfg.Slack.WebhookURL))
 		}
-		if cfg.Email.SMTPHost != "" {
-			notifiers = append(notifiers, notifier.NewEmailNotifier(notifier.EmailConfig{
-				SMTPHost: cfg.Email.SMTPHost,
-				SMTPPort: cfg.Email.SMTPPort,
-				Username: cfg.Email.Username,
-				Password: cfg.Email.Password,
-				From:     cfg.Email.From,
-				To:       cfg.Email.To,
-			}))
-		}
 		if cfg.Webhook.URL != "" {
 			notifiers = append(notifiers, notifier.NewWebhookNotifier(cfg.Webhook.URL))
 		}
-		if cfg.PagerDuty.IntegrationKey != "" {
-			notifiers = append(notifiers, notifier.NewPagerDutyNotifier(cfg.PagerDuty.IntegrationKey))
+		if cfg.PagerDuty.RoutingKey != "" {
+			notifiers = append(notifiers, notifier.NewPagerDutyNotifier(cfg.PagerDuty.RoutingKey))
+		}
+		if cfg.OpsGenie.APIKey != "" {
+			notifiers = append(notifiers, notifier.NewOpsGenieNotifier(cfg.OpsGenie.APIKey, cfg.OpsGenie.Team))
+		}
+		if cfg.Email.SMTPHost != "" {
+			notifiers = append(notifiers, notifier.NewEmailNotifier(
+				cfg.Email.SMTPHost, cfg.Email.SMTPPort,
+				cfg.Email.Username, cfg.Email.Password,
+				cfg.Email.From, cfg.Email.To,
+			))
 		}
 		multi := notifier.NewMulti(notifiers...)
-		if err := multi.Notify(jobResult); err != nil {
+		if err := multi.Notify(result); err != nil {
 			log.Printf("cronwrap: notify: %v", err)
 		}
 	}
 
-	if !jobResult.Success {
-		os.Exit(1)
+	if !result.Success {
+		os.Exit(result.ExitCode)
 	}
 }

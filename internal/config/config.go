@@ -11,8 +11,8 @@ import (
 type Config struct {
 	Command string   `yaml:"command"`
 	Args    []string `yaml:"args"`
-	Timeout int      `yaml:"timeout_seconds"`
 	JobName string   `yaml:"job_name"`
+	Timeout int      `yaml:"timeout_seconds"`
 
 	Slack struct {
 		WebhookURL string `yaml:"webhook_url"`
@@ -32,8 +32,13 @@ type Config struct {
 	} `yaml:"webhook"`
 
 	PagerDuty struct {
-		IntegrationKey string `yaml:"integration_key"`
+		RoutingKey string `yaml:"routing_key"`
 	} `yaml:"pagerduty"`
+
+	OpsGenie struct {
+		APIKey string `yaml:"api_key"`
+		Team   string `yaml:"team"`
+	} `yaml:"opsgenie"`
 
 	History struct {
 		File       string `yaml:"file"`
@@ -44,7 +49,7 @@ type Config struct {
 	NotifyOnSuccess bool `yaml:"notify_on_success"`
 }
 
-// Load reads and validates a config file at the given path.
+// Load reads a YAML config file from path and applies defaults and env overrides.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -65,17 +70,21 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// applyEnvOverrides replaces config values with environment variables when set.
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("CRONWRAP_SLACK_WEBHOOK"); v != "" {
 		cfg.Slack.WebhookURL = v
 	}
-	if v := os.Getenv("CRONWRAP_EMAIL_PASSWORD"); v != "" {
-		cfg.Email.Password = v
+	if v := os.Getenv("CRONWRAP_OPSGENIE_API_KEY"); v != "" {
+		cfg.OpsGenie.APIKey = v
 	}
-	if v := os.Getenv("CRONWRAP_WEBHOOK_URL"); v != "" {
-		cfg.Webhook.URL = v
+	if v := os.Getenv("CRONWRAP_OPSGENIE_TEAM"); v != "" {
+		cfg.OpsGenie.Team = v
 	}
 	if v := os.Getenv("CRONWRAP_PAGERDUTY_KEY"); v != "" {
-		cfg.PagerDuty.IntegrationKey = v
+		cfg.PagerDuty.RoutingKey = v
+	}
+	if v := os.Getenv("CRONWRAP_EMAIL_PASSWORD"); v != "" {
+		cfg.Email.Password = v
 	}
 }
