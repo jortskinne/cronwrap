@@ -61,6 +61,27 @@ func TestMultiNotifier_Empty(t *testing.T) {
 	}
 }
 
+func TestMultiNotifier_AllErrors(t *testing.T) {
+	errA := errors.New("notifier A failed")
+	errB := errors.New("notifier B failed")
+	a := &stubNotifier{err: errA}
+	b := &stubNotifier{err: errB}
+	m := NewMulti(a, b)
+
+	err := m.Notify(JobResult{JobName: "job"})
+	// Should return the first error encountered
+	if err != errA {
+		t.Errorf("expected errA as first error, got %v", err)
+	}
+	// Both notifiers must still have been called
+	if !a.called {
+		t.Error("expected first notifier to be called")
+	}
+	if !b.called {
+		t.Error("expected second notifier to be called")
+	}
+}
+
 func TestJobResult_Fields(t *testing.T) {
 	now := time.Now()
 	r := JobResult{
