@@ -1,5 +1,3 @@
-// Command cronwrap is a lightweight cron job wrapper that captures stdout/stderr,
-// reports failures to Slack or email, and tracks run history.
 package main
 
 import (
@@ -7,91 +5,116 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"time"
 
+	"github.com/yourorg/cronwrap/internal/config"
+	"github.com/yourorg/cronwrap/internal/history"
 	"github.com/yourorg/cronwrap/internal/notifier"
 	"github.com/yourorg/cronwrap/internal/runner"
 )
 
-const version = "0.1.0"
-
 func main() {
-	var (
-		slackWebhook  = flag.String("slack-webhook", "", "Slack incoming webhook URL for failure notifications")
-		timeoutSecs   = flag.Int("timeout", 0, "Command timeout in seconds (0 = no timeout)")
-		jobName       = flag.String("name", "", "Human-readable job name used in notifications")
-		notifyOnSuccess = flag.Bool("notify-success", false, "Send a notification even on successful runs")
-		showVersion   = flag.Bool("version", false, "Print version and exit")
-	)
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: cronwrap [options] -- <command> [args...]\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  cronwrap --name=backup --slack-webhook=https://... -- /usr/bin/backup.sh --full\n")
-	}
-
+	cfgPath := flag.String("config", "cronwrap.yaml", "path to config file")
+	showHistory := flag.Bool("history", false, "print run history and exit")
+	exportCSV := flag.String("export-csv", "", "export history to CSV file")
+	limit := flag.Int("limit", 20, "number of records to show in history")
 	flag.Parse()
 
-	if *showVersion {
-		fmt.Printf("cronwrap %s\n", version)
-		os.Exit(0)
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		log.Fatalf("cronwrap: load config: %v", err)
 	}
 
-	args := flag.Args()
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "error: no command specified")
-		flag.Usage()
-		os.Exit(2)
+	store, err := history.NewStore(cfg.History.File)
+	if err != nil {
+		log.Fatalf("cronwrap: open history store: %v", err)
 	}
 
-	// Derive a job name from the command if not provided.
-	name := *jobName
-	if name == "" {
-		name = strings.Join(args, " ")
-		if len(name) > 60 {
-			name = name[:60] + "..."
+	if *showHistory {
+		if err := history.PrintReport(store, *limit, os.Stdout); err != nil {
+			log.Fatalf("cronwrap: print history: %v", err)
 		}
+		return
 	}
 
-	timeout := time.Duration(*timeoutSecs) * time.Second
+	if *exportCSV != "" {
+		f, err := os.Create(*exportCSV)
+		if err != nil {
+			log.Fatalf("cronwrap: create csv: %v", err)
+		}
+		defer f.Close()
+		if err := history.ExportCSV(store, f); err != nil {
+			log.Fatalf("cronwrap: export csv: %v", err)
+		}
+		fmt.Fprintf(os.Stderr, "exported history to %s\n", *exportCSV)
+		return
+	}
 
 	result, err := runner.Run(runner.Options{
-		Command: args[0],
-		Args:    args[1:],
-		Timeout: timeout,
+		Command: cfg.Command,
+		Args:    cfg.Args,
+		Timeout: time.Duration(cfg.Timeout) * time.Second,
 	})
 	if err != nil {
-		log.Fatalf("cronwrap: failed to run command: %v", err)
+		log.Fatalf("cronwrap: run: %v", err)
 	}
 
-	// Always print captured output so cron can log it normally.
-	if result.Stdout != "" {
-		fmt.Print(result.Stdout)
-	}
-	if result.Stderr != "" {
-		fmt.Fprint(os.Stderr, result.Stderr)
+	jobResult := notifier.JobResult{
+		JobName:   cfg.JobName,
+		Success:   result.ExitCode == 0,
+		ExitCode:  result.ExitCode,
+		Output:    result.Output,
+		Duration:  result.Duration,
+		StartedAt: result.StartedAt,
 	}
 
-	shouldNotify := !result.Success || *notifyOnSuccess
+	if err := store.Append(history.Record{
+		JobName:   cfg.JobName,
+		StartedAt: result.StartedAt,
+		Duration:  result.Duration,
+		ExitCode:  result.ExitCode,
+		Success:   jobResult.Success,
+		Output:    result.Output,
+	}); err != nil {
+		log.Printf("cronwrap: save history: %v", err)
+	}
 
-	if shouldNotify && *slackWebhook != "" {
-		n := notifier.NewSlackNotifier(*slackWebhook)
-		if notifyErr := n.Notify(notifier.NotifyRequest{
-			JobName:  name,
-			Success:  result.Success,
-			ExitCode: result.ExitCode,
-			Stdout:   result.Stdout,
-			Stderr:   result.Stderr,
-			Duration: result.Duration,
-		}); notifyErr != nil {
-			log.Printf("cronwrap: slack notification failed: %v", notifyErr)
+	policy := history.RetentionPolicy{
+		MaxRecords: cfg.History.MaxRecords,
+		MaxAgeDays: cfg.History.MaxAgeDays,
+	}
+	if err := history.ApplyToStore(store, policy); err != nil {
+		log.Printf("cronwrap: apply retention: %v", err)
+	}
+
+	if !jobResult.Success || cfg.NotifyOnSuccess {
+		var notifiers []notifier.Notifier
+		if cfg.Slack.WebhookURL != "" {
+			notifiers = append(notifiers, notifier.NewSlackNotifier(cfg.Slack.WebhookURL))
+		}
+		if cfg.Email.SMTPHost != "" {
+			notifiers = append(notifiers, notifier.NewEmailNotifier(notifier.EmailConfig{
+				SMTPHost: cfg.Email.SMTPHost,
+				SMTPPort: cfg.Email.SMTPPort,
+				Username: cfg.Email.Username,
+				Password: cfg.Email.Password,
+				From:     cfg.Email.From,
+				To:       cfg.Email.To,
+			}))
+		}
+		if cfg.Webhook.URL != "" {
+			notifiers = append(notifiers, notifier.NewWebhookNotifier(cfg.Webhook.URL))
+		}
+		if cfg.PagerDuty.IntegrationKey != "" {
+			notifiers = append(notifiers, notifier.NewPagerDutyNotifier(cfg.PagerDuty.IntegrationKey))
+		}
+		multi := notifier.NewMulti(notifiers...)
+		if err := multi.Notify(jobResult); err != nil {
+			log.Printf("cronwrap: notify: %v", err)
 		}
 	}
 
-	if !result.Success {
-		os.Exit(result.ExitCode)
+	if !jobResult.Success {
+		os.Exit(1)
 	}
 }

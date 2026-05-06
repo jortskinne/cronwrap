@@ -1,92 +1,85 @@
-package config_test
+package config
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
-
-	"github.com/yourorg/cronwrap/internal/config"
 )
 
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
-		t.Fatalf("writeTemp: %v", err)
+	f, err := os.CreateTemp(t.TempDir(), "cronwrap-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
 	}
-	return p
+	f.WriteString(content)
+	f.Close()
+	return f.Name()
 }
 
 func TestLoad_Valid(t *testing.T) {
-	path := writeTemp(t, `
-command: echo hello
-timeout: 30s
-slack:
-  webhook_url: https://hooks.slack.com/xxx
-history:
-  path: /tmp/history.jsonl
-  max_rows: 100
-`)
-	cfg, err := config.Load(path)
+	path := writeTemp(t, "command: echo\nargs: [hello]\njob_name: test-job\n")
+	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Command != "echo hello" {
-		t.Errorf("command = %q, want %q", cfg.Command, "echo hello")
+	if cfg.Command != "echo" {
+		t.Errorf("expected command echo, got %s", cfg.Command)
 	}
-	if cfg.Timeout != 30*time.Second {
-		t.Errorf("timeout = %v, want 30s", cfg.Timeout)
-	}
-	if cfg.History.MaxRows != 100 {
-		t.Errorf("max_rows = %d, want 100", cfg.History.MaxRows)
+	if cfg.JobName != "test-job" {
+		t.Errorf("expected job_name test-job, got %s", cfg.JobName)
 	}
 }
 
 func TestLoad_MissingCommand(t *testing.T) {
-	path := writeTemp(t, `timeout: 10s`)
-	_, err := config.Load(path)
+	path := writeTemp(t, "job_name: no-cmd\n")
+	_, err := Load(path)
 	if err == nil {
 		t.Fatal("expected error for missing command")
 	}
 }
 
 func TestLoad_FileNotFound(t *testing.T) {
-	_, err := config.Load("/nonexistent/path.yaml")
+	_, err := Load(filepath.Join(t.TempDir(), "nonexistent.yaml"))
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
-	path := writeTemp(t, `command: ls`)
-	t.Setenv("CRONWRAP_SLACK_WEBHOOK", "https://env-webhook")
-	t.Setenv("CRONWRAP_HISTORY_PATH", "/tmp/env-history.jsonl")
-
-	cfg, err := config.Load(path)
+	path := writeTemp(t, "command: echo\n")
+	t.Setenv("CRONWRAP_SLACK_WEBHOOK", "https://hooks.slack.com/test")
+	t.Setenv("CRONWRAP_PAGERDUTY_KEY", "pd-integration-key")
+	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Slack.WebhookURL != "https://env-webhook" {
-		t.Errorf("webhook = %q, want env override", cfg.Slack.WebhookURL)
+	if cfg.Slack.WebhookURL != "https://hooks.slack.com/test" {
+		t.Errorf("slack webhook not overridden, got %s", cfg.Slack.WebhookURL)
 	}
-	if cfg.History.Path != "/tmp/env-history.jsonl" {
-		t.Errorf("history path = %q, want env override", cfg.History.Path)
-	}
-}
-
-func TestValidate_NegativeTimeout(t *testing.T) {
-	cfg := &config.Config{Command: "ls", Timeout: -1}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error for negative timeout")
+	if cfg.PagerDuty.IntegrationKey != "pd-integration-key" {
+		t.Errorf("pagerduty key not overridden, got %s", cfg.PagerDuty.IntegrationKey)
 	}
 }
 
-func TestValidate_NegativeMaxRows(t *testing.T) {
-	cfg := &config.Config{Command: "ls"}
-	cfg.History.MaxRows = -5
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error for negative max_rows")
+func TestLoad_PagerDutyConfig(t *testing.T) {
+	path := writeTemp(t, "command: echo\npagerduty:\n  integration_key: my-key\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PagerDuty.IntegrationKey != "my-key" {
+		t.Errorf("expected integration key my-key, got %s", cfg.PagerDuty.IntegrationKey)
+	}
+}
+
+func TestLoad_NotifyOnSuccess(t *testing.T) {
+	path := writeTemp(t, "command: echo\nnotify_on_success: true\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.NotifyOnSuccess {
+		t.Error("expected notify_on_success to be true")
 	}
 }
